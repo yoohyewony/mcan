@@ -195,9 +195,10 @@ class Execution:
 
                     
                     out, q_emb, lang_feat_mask = net(sub_img_feat_iter, sub_ques_ix_iter)
-                    pred_qo, q_out = qnet(q_emb, lang_feat_mask)
+                    pred_qo = qnet(q_emb, lang_feat_mask)
                     #print(pred_qo.shape, sub_ans_iter.shape)
                     #print(torch.argmax(sub_ans_iter.long(), dim=1))
+                    
                     ans_idx = torch.argmax(sub_ans_iter.long(), dim=1)
                     pred_idx = torch.argmax(pred_qo.long(), dim=1)   # predicted answer index from QO
                     qo_scale = pred_qo.detach().clone()
@@ -205,11 +206,8 @@ class Execution:
                         if (ans_idx[i] == pred_idx[i]):
                             qo_scale[i, :] = torch.ones(3129)
                     
-                    L_qo = loss_qo(q_out, sub_ans_iter)
-                    L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(qo_scale)), sub_ans_iter)
-                    
-                    #L_qo = loss_qo(q_out, sub_ans_iter)
-                    #L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(pred_qo)), sub_ans_iter)
+                    L_qo = loss_qo(pred_qo, sub_ans_iter)
+                    L_qm = loss_qm(torch.sigmoid(out)*qo_scale, sub_ans_iter)
 
                     loss = L_qo + L_qm
                     
@@ -219,12 +217,14 @@ class Execution:
                     # loss /= self.__C.GRAD_ACCU_STEPS
                     loss.backward()
                     loss_sum += loss.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
+                    #L_qo.backward()
+                    #L_qm.backward()
                     L_qo_sum += L_qo.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
                     L_qm_sum += L_qm.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
                     
                     wandb.log({"Training loss": loss.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
                               "Question only loss": L_qo.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
-                              "Fusion loss": L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE})    # Tracking training loss
+                              "Fusion loss": L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,})    # Tracking training loss
 
                     if self.__C.VERBOSE:    # print loss every step -> TRUE
                         if dataset_eval is not None:

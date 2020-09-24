@@ -172,7 +172,7 @@ class MCA_ED(nn.Module):
     def __init__(self, __C):
         super(MCA_ED, self).__init__()
 
-        self.enc_list = nn.ModuleList([SA(__C) for _ in range(__C.LAYER)])     # number of LAYER = 6
+        self.enc_list = nn.ModuleList([SA(__C) for _ in range(__C.LAYER)])
         self.dec_list = nn.ModuleList([SGA(__C) for _ in range(__C.LAYER)])
 
     def forward(self, x, y, x_mask, y_mask):

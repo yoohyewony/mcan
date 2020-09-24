@@ -18,7 +18,7 @@ class Cfgs(PATH):
 
         # Set Devices
         # If use multi-gpu training, set e.g.'0, 1, 2' instead
-        self.GPU = '0'
+        self.GPU = '3'
 
         # Set RNG For CPU And GPUs
         self.SEED = random.randint(0, 99999999)
@@ -70,7 +70,7 @@ class Cfgs(PATH):
         }
 
         # A external method to set train split
-        self.TRAIN_SPLIT = 'train+val+vg'
+        self.TRAIN_SPLIT = 'train+val'
 
         # Set True to use pretrained word embedding
         # (GloVe: spaCy https://spacy.io/)

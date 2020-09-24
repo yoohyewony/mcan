@@ -5,7 +5,7 @@
 # --------------------------------------------------------
 
 from core.data.load_data import DataSet
-from core.model.net import Net, QNet
+from core.model.net import Net
 from core.model.optim import get_optim, adjust_lr
 from core.data.data_utils import shuffle_list
 from utils.vqa import VQA
@@ -53,19 +53,8 @@ class Execution:
         net.cuda()
         net.train()
         
-        # Define the Question-only model
-        qnet = QNet(
-            self.__C,
-            pretrained_emb,
-            token_size,
-            ans_size
-        )
-        qnet.cuda()
-        qnet.train()
-        
         # Watch net & qnet
         wandb.watch(net)
-        wandb.watch(qnet)
 
         # Define the multi-gpu training if needed
         if self.__C.N_GPU > 1:
@@ -112,13 +101,13 @@ class Execution:
 
             #params = net.parameters() + qnet.parameters()
             optim = get_optim(self.__C, net, data_size)
-            optim_q = get_optim(self.__C, qnet, data_size)
+            #optim_q = get_optim(self.__C, qnet, data_size)
             start_epoch = 0
 
         loss_sum = 0
         L_qo_sum = 0
         L_qm_sum = 0
-        named_params = list(net.named_parameters()) + list(qnet.named_parameters())
+        named_params = list(net.named_parameters())
         grad_norm = np.zeros(len(named_params))
 
         # Define multi-thread dataloader
@@ -160,7 +149,7 @@ class Execution:
             # Learning Rate Decay
             if epoch in self.__C.LR_DECAY_LIST:
                 adjust_lr(optim, self.__C.LR_DECAY_R)
-                adjust_lr(optim_q, self.__C.LR_DECAY_R)
+                #adjust_lr(optim_q, self.__C.LR_DECAY_R)
 
             # Externally shuffle
             if self.__C.SHUFFLE_MODE == 'external':
@@ -175,7 +164,6 @@ class Execution:
             ) in enumerate(dataloader):
 
                 optim.zero_grad()
-                optim_q.zero_grad()
 
                 img_feat_iter = img_feat_iter.cuda()
                 ques_ix_iter = ques_ix_iter.cuda()
@@ -194,22 +182,21 @@ class Execution:
                                  (accu_step + 1) * self.__C.SUB_BATCH_SIZE]
 
                     
-                    out, q_emb, lang_feat_mask = net(sub_img_feat_iter, sub_ques_ix_iter)
-                    pred_qo, q_out = qnet(q_emb, lang_feat_mask)
+                    out, proj_feat_img, proj_feat_lang = net(sub_img_feat_iter, sub_ques_ix_iter)
                     #print(pred_qo.shape, sub_ans_iter.shape)
                     #print(torch.argmax(sub_ans_iter.long(), dim=1))
+                    
+                    lang_feat = torch.sigmoid(proj_feat_lang)
                     ans_idx = torch.argmax(sub_ans_iter.long(), dim=1)
-                    pred_idx = torch.argmax(pred_qo.long(), dim=1)   # predicted answer index from QO
-                    qo_scale = pred_qo.detach().clone()
+                    pred_idx = torch.argmax(lang_feat.long(), dim=1)   # predicted answer index from QO
+                    qo_scale = lang_feat.detach().clone()
+                    
                     for i in range(self.__C.SUB_BATCH_SIZE):
                         if (ans_idx[i] == pred_idx[i]):
                             qo_scale[i, :] = torch.ones(3129)
                     
-                    L_qo = loss_qo(q_out, sub_ans_iter)
-                    L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(qo_scale)), sub_ans_iter)
-                    
-                    #L_qo = loss_qo(q_out, sub_ans_iter)
-                    #L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(pred_qo)), sub_ans_iter)
+                    L_qo = loss_qo(lang_feat, sub_ans_iter)
+                    L_qm = loss_qm(torch.sigmoid(out)*qo_scale, sub_ans_iter)
 
                     loss = L_qo + L_qm
                     
@@ -219,12 +206,14 @@ class Execution:
                     # loss /= self.__C.GRAD_ACCU_STEPS
                     loss.backward()
                     loss_sum += loss.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
+                    #L_qo.backward()
+                    #L_qm.backward()
                     L_qo_sum += L_qo.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
                     L_qm_sum += L_qm.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
                     
                     wandb.log({"Training loss": loss.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
                               "Question only loss": L_qo.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
-                              "Fusion loss": L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE})    # Tracking training loss
+                              "Fusion loss": L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,})    # Tracking training loss
 
                     if self.__C.VERBOSE:    # print loss every step -> TRUE
                         if dataset_eval is not None:
@@ -260,7 +249,6 @@ class Execution:
                     #        str(norm_v)))
 
                 optim.step()
-                optim_q.step()
 
             time_end = time.time()
             print('Finished in {}s'.format(int(time_end-time_start)))

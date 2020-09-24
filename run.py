@@ -7,6 +7,7 @@
 from cfgs.base_cfgs import Cfgs
 from core.exec import Execution
 import argparse, yaml
+import wandb
 
 
 def parse_args():
@@ -117,6 +118,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+wandb.init()
 
 if __name__ == '__main__':
     __C = Cfgs()
@@ -131,6 +133,8 @@ if __name__ == '__main__':
     args_dict = {**yaml_dict, **args_dict}
     __C.add_args(args_dict)
     __C.proc()
+    
+    wandb.config.update(args)
 
     print('Hyper Parameters:')
     print(__C)

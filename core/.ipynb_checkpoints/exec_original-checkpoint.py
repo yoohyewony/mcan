@@ -5,7 +5,7 @@
 # --------------------------------------------------------
 
 from core.data.load_data import DataSet
-from core.model.net import Net, QNet
+from core.model.net import Net
 from core.model.optim import get_optim, adjust_lr
 from core.data.data_utils import shuffle_list
 from utils.vqa import VQA
@@ -15,7 +15,6 @@ import os, json, torch, datetime, pickle, copy, shutil, time
 import numpy as np
 import torch.nn as nn
 import torch.utils.data as Data
-import torch.nn.functional as F
 
 import wandb
 
@@ -53,19 +52,8 @@ class Execution:
         net.cuda()
         net.train()
         
-        # Define the Question-only model
-        qnet = QNet(
-            self.__C,
-            pretrained_emb,
-            token_size,
-            ans_size
-        )
-        qnet.cuda()
-        qnet.train()
-        
         # Watch net & qnet
         wandb.watch(net)
-        wandb.watch(qnet)
 
         # Define the multi-gpu training if needed
         if self.__C.N_GPU > 1:
@@ -73,8 +61,7 @@ class Execution:
 
         # Define the binary cross entropy loss
         # loss_fn = torch.nn.BCELoss(size_average=False).cuda()
-        loss_qm = torch.nn.BCELoss(reduction='sum').cuda()
-        loss_qo = torch.nn.BCELoss(reduction='sum').cuda()
+        loss_fn = torch.nn.BCELoss(reduction='sum').cuda()
 
         # Load checkpoint if resume training
         if self.__C.RESUME:    # default -> FALSE
@@ -97,7 +84,6 @@ class Execution:
             net.load_state_dict(ckpt['state_dict'])
 
             # Load the optimizer paramters
-            #params = list(net.parameters()) + list(qnet.parameters())
             optim = get_optim(self.__C, net, data_size, ckpt['lr_base'])
             optim._step = int(data_size / self.__C.BATCH_SIZE * self.__C.CKPT_EPOCH)
             optim.optimizer.load_state_dict(ckpt['optimizer'])
@@ -110,15 +96,11 @@ class Execution:
 
             os.mkdir(self.__C.CKPTS_PATH + 'ckpt_' + self.__C.VERSION)
 
-            #params = net.parameters() + qnet.parameters()
             optim = get_optim(self.__C, net, data_size)
-            optim_q = get_optim(self.__C, qnet, data_size)
             start_epoch = 0
 
         loss_sum = 0
-        L_qo_sum = 0
-        L_qm_sum = 0
-        named_params = list(net.named_parameters()) + list(qnet.named_parameters())
+        named_params = list(net.named_parameters())
         grad_norm = np.zeros(len(named_params))
 
         # Define multi-thread dataloader
@@ -160,7 +142,6 @@ class Execution:
             # Learning Rate Decay
             if epoch in self.__C.LR_DECAY_LIST:
                 adjust_lr(optim, self.__C.LR_DECAY_R)
-                adjust_lr(optim_q, self.__C.LR_DECAY_R)
 
             # Externally shuffle
             if self.__C.SHUFFLE_MODE == 'external':
@@ -175,7 +156,6 @@ class Execution:
             ) in enumerate(dataloader):
 
                 optim.zero_grad()
-                optim_q.zero_grad()
 
                 img_feat_iter = img_feat_iter.cuda()
                 ques_ix_iter = ques_ix_iter.cuda()
@@ -193,38 +173,21 @@ class Execution:
                         ans_iter[accu_step * self.__C.SUB_BATCH_SIZE:
                                  (accu_step + 1) * self.__C.SUB_BATCH_SIZE]
 
-                    
-                    out, q_emb, lang_feat_mask = net(sub_img_feat_iter, sub_ques_ix_iter)
-                    pred_qo, q_out = qnet(q_emb, lang_feat_mask)
-                    #print(pred_qo.shape, sub_ans_iter.shape)
-                    #print(torch.argmax(sub_ans_iter.long(), dim=1))
-                    ans_idx = torch.argmax(sub_ans_iter.long(), dim=1)
-                    pred_idx = torch.argmax(pred_qo.long(), dim=1)   # predicted answer index from QO
-                    qo_scale = pred_qo.detach().clone()
-                    for i in range(self.__C.SUB_BATCH_SIZE):
-                        if (ans_idx[i] == pred_idx[i]):
-                            qo_scale[i, :] = torch.ones(3129)
-                    
-                    L_qo = loss_qo(q_out, sub_ans_iter)
-                    L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(qo_scale)), sub_ans_iter)
-                    
-                    #L_qo = loss_qo(q_out, sub_ans_iter)
-                    #L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(pred_qo)), sub_ans_iter)
 
-                    loss = L_qo + L_qm
-                    
+                    pred = net(
+                        sub_img_feat_iter,
+                        sub_ques_ix_iter
+                    )
+
+                    loss = loss_fn(pred, sub_ans_iter)
                     # only mean-reduction needs be divided by grad_accu_steps
                     # removing this line wouldn't change our results because the speciality of Adam optimizer,
                     # but would be necessary if you use SGD optimizer.
                     # loss /= self.__C.GRAD_ACCU_STEPS
                     loss.backward()
                     loss_sum += loss.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
-                    L_qo_sum += L_qo.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
-                    L_qm_sum += L_qm.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
                     
-                    wandb.log({"Training loss": loss.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
-                              "Question only loss": L_qo.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
-                              "Fusion loss": L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE})    # Tracking training loss
+                    wandb.log({"Training loss": loss.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE})
 
                     if self.__C.VERBOSE:    # print loss every step -> TRUE
                         if dataset_eval is not None:
@@ -260,7 +223,6 @@ class Execution:
                     #        str(norm_v)))
 
                 optim.step()
-                optim_q.step()
 
             time_end = time.time()
             print('Finished in {}s'.format(int(time_end-time_start)))
@@ -290,8 +252,6 @@ class Execution:
             )
             logfile.write(
                 'epoch = ' + str(epoch_finish) +
-                '  Q loss = ' + str(L_qo_sum / data_size) +
-                '  fusion loss = ' + str(L_qm_sum / data_size) +
                 '  loss = ' + str(loss_sum / data_size) +
                 '\n' +
                 'lr = ' + str(optim._rate) +
@@ -325,8 +285,6 @@ class Execution:
             #     logfile.close()
 
             loss_sum = 0
-            L_qo_sum = 0
-            L_qm_sum = 0
             grad_norm = np.zeros(len(named_params))
 
 
@@ -400,8 +358,7 @@ class Execution:
                 img_feat_iter,
                 ques_ix_iter
             )
-            #print(pred)
-            pred_np = pred[0].cpu().data.numpy()
+            pred_np = pred.cpu().data.numpy()
             pred_argmax = np.argmax(pred_np, axis=1)
 
             # Save the answer index
@@ -494,8 +451,8 @@ class Execution:
         # Run validation script
         if valid:
             # create vqa object and vqaRes object
-            ques_file_path = self.__C.QUESTION_PATH['test']
-            ans_file_path = self.__C.ANSWER_PATH['test']
+            ques_file_path = self.__C.QUESTION_PATH['val']
+            ans_file_path = self.__C.ANSWER_PATH['val']
 
             vqa = VQA(ans_file_path, ques_file_path)
             vqaRes = vqa.loadRes(result_eval_file, ques_file_path)
@@ -564,7 +521,7 @@ class Execution:
             self.eval(self.dataset, valid=True)
 
         elif run_mode == 'test':
-            self.eval(self.dataset, valid=True)
+            self.eval(self.dataset)
 
         else:
             exit(-1)
@@ -576,4 +533,3 @@ class Execution:
             os.remove(self.__C.LOG_PATH + 'log_run_' + version + '.txt')
         print('Finished!')
         print('')
-

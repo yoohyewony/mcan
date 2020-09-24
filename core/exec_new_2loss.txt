@@ -195,9 +195,10 @@ class Execution:
 
                     
                     out, q_emb, lang_feat_mask = net(sub_img_feat_iter, sub_ques_ix_iter)
-                    pred_qo, q_out = qnet(q_emb, lang_feat_mask)
+                    pred_qo = qnet(q_emb, lang_feat_mask)
                     #print(pred_qo.shape, sub_ans_iter.shape)
                     #print(torch.argmax(sub_ans_iter.long(), dim=1))
+                    
                     ans_idx = torch.argmax(sub_ans_iter.long(), dim=1)
                     pred_idx = torch.argmax(pred_qo.long(), dim=1)   # predicted answer index from QO
                     qo_scale = pred_qo.detach().clone()
@@ -205,26 +206,26 @@ class Execution:
                         if (ans_idx[i] == pred_idx[i]):
                             qo_scale[i, :] = torch.ones(3129)
                     
-                    L_qo = loss_qo(q_out, sub_ans_iter)
-                    L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(qo_scale)), sub_ans_iter)
-                    
-                    #L_qo = loss_qo(q_out, sub_ans_iter)
-                    #L_qm = loss_qm(torch.sigmoid(out*torch.sigmoid(pred_qo)), sub_ans_iter)
+                    L_qo = loss_qo(pred_qo, sub_ans_iter)
+                    L_qm = loss_qm(torch.sigmoid(out)*qo_scale, sub_ans_iter)
 
-                    loss = L_qo + L_qm
+                    #loss = L_qo + L_qm
                     
                     # only mean-reduction needs be divided by grad_accu_steps
                     # removing this line wouldn't change our results because the speciality of Adam optimizer,
                     # but would be necessary if you use SGD optimizer.
                     # loss /= self.__C.GRAD_ACCU_STEPS
-                    loss.backward()
-                    loss_sum += loss.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
+                    #loss.backward()
+                    #loss_sum += loss.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
+                    
+                    L_qm.backward(retain_graph=True)
+                    L_qo.backward()
                     L_qo_sum += L_qo.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
                     L_qm_sum += L_qm.cpu().data.numpy() * self.__C.GRAD_ACCU_STEPS
                     
-                    wandb.log({"Training loss": loss.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
-                              "Question only loss": L_qo.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
-                              "Fusion loss": L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE})    # Tracking training loss
+                    wandb.log({"Question only loss": L_qo.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
+                              "Fusion loss": L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,})    # Tracking training loss
+                    # "Training loss": loss.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
 
                     if self.__C.VERBOSE:    # print loss every step -> TRUE
                         if dataset_eval is not None:
@@ -238,7 +239,7 @@ class Execution:
                             step,
                             int(data_size / self.__C.BATCH_SIZE),
                             mode_str,
-                            loss.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
+                            L_qm.cpu().data.numpy() / self.__C.SUB_BATCH_SIZE,
                             optim._rate
                         ), end='          ')
 
@@ -292,7 +293,6 @@ class Execution:
                 'epoch = ' + str(epoch_finish) +
                 '  Q loss = ' + str(L_qo_sum / data_size) +
                 '  fusion loss = ' + str(L_qm_sum / data_size) +
-                '  loss = ' + str(loss_sum / data_size) +
                 '\n' +
                 'lr = ' + str(optim._rate) +
                 '\n\n'
@@ -324,7 +324,7 @@ class Execution:
             #     logfile.write('\n')
             #     logfile.close()
 
-            loss_sum = 0
+            #loss_sum = 0
             L_qo_sum = 0
             L_qm_sum = 0
             grad_norm = np.zeros(len(named_params))
@@ -494,8 +494,8 @@ class Execution:
         # Run validation script
         if valid:
             # create vqa object and vqaRes object
-            ques_file_path = self.__C.QUESTION_PATH['test']
-            ans_file_path = self.__C.ANSWER_PATH['test']
+            ques_file_path = self.__C.QUESTION_PATH['val']
+            ans_file_path = self.__C.ANSWER_PATH['val']
 
             vqa = VQA(ans_file_path, ques_file_path)
             vqaRes = vqa.loadRes(result_eval_file, ques_file_path)
